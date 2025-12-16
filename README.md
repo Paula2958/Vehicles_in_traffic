@@ -282,10 +282,237 @@ area_pts = np.array([
 En esta parte se detallan las mejoras incorporadas al sistema original de detección y conteo de vehículos. Se tratan de forma conjunta los puntos 2, 4, 5 y 6, ya que las optimizaciones aplicadas permiten abordar estos requerimientos de manera integrada. En concreto, se ha ampliado la capacidad del sistema para operar simultáneamente en varios carriles y vías, incluyendo configuraciones con doble sentido de circulación y flujos vehiculares tanto de entrada como de salida. Asimismo, se comprueba que el enfoque adoptado funciona adecuadamente en contextos con diferentes velocidades de tráfico y ofrece un rendimiento estable frente a la presencia de diversos tipos de vehículos, como motocicletas, turismos, furgonetas o camiones.
 
 ```python
+import cv2
+import numpy as np
 
+video = 'tra╠üfico01.mp4'
+background = cv2.imread('background.png')
 
+if background is None:
+    print("Error: No se pudo cargar 'background.png'.")
+    exit()
 
+cap = cv2.VideoCapture(video)
 
+T = 50               # umbral para binarizar la diferencia
+AREA_MINIMA = 100    # área mínima de contorno para considerar detección
+AREA_MAX = 15000    # área máxima de contorno para considerar detección
+DISTANCIA_MAX = 78   # distancia máxima para considerar "el mismo coche"
+MAX_FRAMES_PERDIDO = 10  # nº máximo de frames sin ver un coche antes de borrarlo
+
+# Lee el primer frame para obtener tamaño
+ret, frame = cap.read()
+if not ret or frame is None:
+    print("Error: No se pudo leer el primer frame.")
+    exit()
+
+height, width = frame.shape[:2]
+
+# CONFIGURACIÓN PARA CADA VÍA (tamaños, separaciones y alturas) 
+widths  = [60, 70, 70, 200, 200, 100]     # ancho de las vías
+heights = [35, 100, 100, 100, 90, 70]     # alturas 
+gaps    = [70, 50, 350, -20, -50]         # gaps entre vías (distancia de via a via)
+y_offsets = [-250, 70, 0, 150, 30, -135]  # offsets verticales por vía (ajusta para poner más arriba o más abajo)
+
+USE_EXPLICIT_VIAS = False
+vias_explicit = [] 
+
+# >>> AQUÍ MUEVO LA VÍA MÁS A LA IZQUIERDA <<<
+EXTRA_LEFT = 250  # píxeles extra para mover la primera vía aún más a la izquierda
+first_rect_width = widths[0] if len(widths) > 0 else 60
+base_top_left_x = (width - first_rect_width) - 1350 - EXTRA_LEFT
+# <<< FIN CAMBIO >>>
+
+# Construimos varias áreas (vías) con tamaños, gaps y offsets verticales distintos
+area_pts_list = []
+
+if USE_EXPLICIT_VIAS and len(vias_explicit) > 0:
+    # Usar coordenadas explícitas (x,y,w,h)
+    for (x, y, w, h) in vias_explicit:
+        x0 = max(0, min(int(x), width-1))
+        y0 = max(0, min(int(y), height-1))
+        x1 = min(width-1, x0 + int(w))
+        y1 = min(height-1, y0 + int(h))
+        area_pts = np.array([[x0,y0],[x1,y0],[x1,y1],[x0,y1]])
+        area_pts_list.append(area_pts)
+else:
+    # Usar listas widths/heights/gaps/y_offsets (longitud determina NUM_VIAS)
+    num_vias = len(widths)
+    # Asegurar que heights, gaps y y_offsets tengan la longitud necesaria
+    if len(heights) < num_vias:
+        heights = heights + [heights[-1]] * (num_vias - len(heights))
+    if len(gaps) < max(0, num_vias-1):
+        gaps = gaps + [0] * (max(0, num_vias-1) - len(gaps))
+    if len(y_offsets) < num_vias:
+        y_offsets = y_offsets + [0] * (num_vias - len(y_offsets))
+
+    tlx = base_top_left_x
+    for i in range(num_vias):
+        wv = int(widths[i])
+        hv = int(heights[i])
+        # centrar verticalmente cada vía según su altura y aplicar offset vertical específico
+        tly = (height - hv) // 2 + int(y_offsets[i])
+        # Clamp para no salir del frame
+        x0 = max(0, min(tlx, width-1))
+        y0 = max(0, min(tly, height-1))
+        x1 = min(width-1, x0 + wv)
+        y1 = min(height-1, y0 + hv)
+        area_pts = np.array([
+            [x0, y0],
+            [x1, y0],
+            [x1, y1],
+            [x0, y1]
+        ])
+        area_pts_list.append(area_pts)
+        # mover X acumulativo: ancho de esta vía + gap (si existe)
+        gap = gaps[i] if i < len(gaps) else 0
+        tlx = tlx + wv + gap
+
+# Inicializamos contadores por vía
+counters_vias = [0 for _ in range(len(area_pts_list))]
+
+class Coche:
+    def __init__(self, x, y, w, h, area, id, via_index=None):
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+        self.area = area
+        self.id = id
+        self.frames_seen = 1
+        self.updated = True
+        self.via_index = via_index  # vía en la que fue detectado inicialmente (puede ser None)
+        self.frames_perdido = 0     # <<< nº de frames seguidos sin ser actualizado
+
+    def centroide(self):
+        # Retorna el centro del bounding box
+        return (self.x + self.w // 2, self.y + self.h // 2)
+
+coches_unicos = []
+proximo_id = 1        # ID incremental de coche
+total_coches = 0      # <<< número total de coches distintos creados
+
+# Regresamos al primer frame del video
+cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret or frame is None:
+        break
+
+    diff = cv2.absdiff(frame, background)
+    diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+    _, diff_bin = cv2.threshold(diff_gray, T, 255, cv2.THRESH_BINARY)
+
+    
+    detectados = []  # ahora guardamos (x,y,w,h,area,via_index) por detección
+
+    # Para cada vía, aplicamos su máscara y extraemos contornos
+    # NOTA: para evitar duplicados si hay solapamiento entre vías, se guardarán centros ya asignados
+    centros_asignados = set()
+    for idx, area_pts in enumerate(area_pts_list):
+        mask = np.zeros_like(diff_bin)
+        cv2.fillPoly(mask, [area_pts], 255)
+        diff_bin_carril = cv2.bitwise_and(diff_bin, mask)
+        contours, _ = cv2.findContours(diff_bin_carril, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if AREA_MINIMA <= area <= AREA_MAX:
+                x, y, wv, hv = cv2.boundingRect(contour)
+                cX = x + wv//2
+                cY = y + hv//2
+                centro_key = (int(cX), int(cY))
+                # Si ya asignamos una detección con el mismo centro (por otra vía), la saltamos
+                if centro_key in centros_asignados:
+                    continue
+                centros_asignados.add(centro_key)
+                detectados.append((x, y, wv, hv, area, idx))
+
+    # Marcar todos los coches como NO actualizados
+    for coche in coches_unicos:
+        coche.updated = False
+
+    # Para cada detección, buscar el coche anterior más cercano (tracking simple por centroide)
+    for x, y, wv, hv, area, via_idx in detectados:
+        c_actual = (x + wv // 2, y + hv // 2)
+        min_dist = float('inf')
+        coche_match = None
+        for coche in coches_unicos:
+            c_anterior = coche.centroide()
+            dist = np.hypot(c_actual[0] - c_anterior[0], c_actual[1] - c_anterior[1])
+            if dist < min_dist and dist < DISTANCIA_MAX:
+                min_dist = dist
+                coche_match = coche
+
+        if coche_match is not None:
+            # Actualiza el coche existente
+            coche_match.x = x
+            coche_match.y = y
+            coche_match.w = wv
+            coche_match.h = hv
+            coche_match.area = area
+            coche_match.frames_seen += 1
+            coche_match.updated = True
+            coche_match.frames_perdido = 0   # <<< lo hemos visto este frame
+            coche_id = coche_match.id
+            # Si aún no tiene vía asignada, y la detección está en una vía, asignarla (no recount)
+            if coche_match.via_index is None and via_idx is not None:
+                coche_match.via_index = via_idx
+                counters_vias[via_idx] += 1
+        else:
+            # Coche NUEVO
+            nuevo_coche = Coche(x, y, wv, hv, area, proximo_id, via_index=via_idx)
+            coches_unicos.append(nuevo_coche)
+            if via_idx is not None:
+                counters_vias[via_idx] += 1
+            proximo_id += 1
+            total_coches += 1        # <<< contamos un coche nuevo distinto
+            coche_id = nuevo_coche.id
+
+        # Dibuja el bounding box con el ID
+        cv2.rectangle(frame, (x, y), (x + wv, y + hv), (0, 255, 0), 2)
+        cv2.putText(frame, f'ID:{coche_id}', (x, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+    # <<< ELIMINAR COCHES QUE YA NO APARECEN >>>
+    coches_filtrados = []
+    for coche in coches_unicos:
+        if coche.updated:
+            coches_filtrados.append(coche)
+        else:
+            coche.frames_perdido += 1
+            if coche.frames_perdido <= MAX_FRAMES_PERDIDO:
+                coches_filtrados.append(coche)
+            # si lo hemos perdido demasiados frames, lo quitamos de la lista
+    coches_unicos = coches_filtrados
+    # >>> FIN BORRADO DE COCHES MUERTOS <<<
+
+    # Dibujar todas las vías y sus contadores
+    for idx, area_pts in enumerate(area_pts_list):
+        color = (255, 0, 0)
+        cv2.polylines(frame, [area_pts], isClosed=True, color=color, thickness=2)
+        px = int(area_pts[0][0]) + 5
+        py = int(area_pts[0][1]) - 10
+        cv2.putText(frame, f'Via {idx+1}: {counters_vias[idx]}', (px, py),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
+
+    # Usamos total_coches (coche distintos) en lugar de len(coches_unicos)
+    cv2.putText(frame, f'Contador coches: {total_coches}', (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+    cv2.imshow('Video con detección de coches únicos', frame)
+    cv2.imshow('Diferencias significativas', diff_bin)
+
+    if cv2.waitKey(30) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
+
+print(f'Coches únicos detectados en el vídeo: {total_coches}')
+for idx, cnt in enumerate(counters_vias):
+    print(f'Via {idx+1} - Coches detectados: {cnt}')
 ```
 
 
