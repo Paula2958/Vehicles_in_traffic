@@ -2,9 +2,9 @@
 
 **Análisis del sistema de detección y seguimiento de vehículos**
 
-Asignatura: Fundamentos de Sistemas Inteligentes 
-Grado en Ciencias e Ingeniería de Datos 
-Alumnos: Joel López, Sara Dévora y Paula Hernández 
+Asignatura: Fundamentos de Sistemas Inteligentes/n 
+Grado en Ciencias e Ingeniería de Datos/n
+Alumnos: Joel López, Sara Dévora y Paula Hernández/n
 Fecha: 3/11/2025
 
 ### Introducción
