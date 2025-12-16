@@ -4,7 +4,7 @@
 
 Asignatura: Fundamentos de Sistemas Inteligentes<br>
 Grado en Ciencias e Ingeniería de Datos<br>
-Alumnos: Joel López, Sara Dévora y Paula Hernández
+Alumnos: Joel López, Sara Dévora y Paula Hernández<br>
 Fecha: 3/11/2025
 
 ### Introducción
