@@ -8,7 +8,7 @@ Alumnos: Joel López, Sara Dévora y Paula Hernández<br>
 Fecha: 3/11/2025
 
 ### Enlace al video en drive: 
-[Video tráfico](https://drive.google.com/drive/folders/10LDE3zYdzmwGXFmcItou0UjjyZgg8ATo?usp=drive_link)
+[Video tráfico](https://drive.google.com/drive/folders/10LDE3zYdzmwGXFmcItou0UjjyZgg8ATo?usp=sharing)
 
 
 ### Introducción
