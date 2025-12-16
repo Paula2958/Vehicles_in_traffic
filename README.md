@@ -7,6 +7,10 @@ Grado en Ciencias e Ingeniería de Datos<br>
 Alumnos: Joel López, Sara Dévora y Paula Hernández<br>
 Fecha: 3/11/2025
 
+### Enlace al video en drive: 
+[Video tráfico](https://drive.google.com/drive/folders/10LDE3zYdzmwGXFmcItou0UjjyZgg8ATo?usp=drive_link)
+
+
 ### Introducción
 El objetivo de esta practica es poder desarrollar un sistema que sea capaz de detectar y contar vehículos de un vídeo de tráfico real extraído de la dgt  utilizando exclusivamente técnicas de visión por computador con la librería de VisualStudio OpenCV, sin emplear redes neuronales.
 
